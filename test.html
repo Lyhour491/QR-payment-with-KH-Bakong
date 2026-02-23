@@ -1,0 +1,20 @@
+<html>
+  <body>
+    <h2>KHQR POS</h2>
+
+    <img id="qr" width="300" />
+
+    <script>
+      fetch("http://127.0.0.1:8000/pos/sale", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount: 1, currency: "USD" }),
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          document.getElementById("qr").src =
+            "data:image/png;base64," + data.qr_png_base64;
+        });
+    </script>
+  </body>
+</html>
