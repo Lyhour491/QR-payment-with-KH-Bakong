@@ -1,4 +1,3 @@
-# main.py
 import os
 import uuid
 import time
@@ -28,6 +27,7 @@ STORE_LABEL = os.getenv("STORE_LABEL", "Shop").strip()
 PHONE = os.getenv("PHONE", "").strip()
 TERMINAL = os.getenv("TERMINAL", "POS-01").strip()
 DEFAULT_CURRENCY = os.getenv("CURRENCY", "USD").strip()  # "USD" or "KHR"
+SALE_TTL_SECONDS = int(os.getenv("SALE_TTL_SECONDS", "300"))  # default 5 minutes
 
 # Create KHQR instance (token needed only for check_payment)
 khqr = KHQR(BAKONG_TOKEN) if BAKONG_TOKEN else KHQR()
@@ -82,6 +82,7 @@ class SaleCreateRes(BaseModel):
     qr_png_base64: str
     status: str
     created_at: int
+    expired_at: int
 
 
 class SaleStatusRes(BaseModel):
@@ -105,6 +106,9 @@ def create_sale(req: SaleCreateReq):
 
     # Unique bill number per sale
     bill_number = f"POS-{created_at}-{sale_id[:8]}"
+
+    # Expiry time (seconds)
+    expired_at = created_at + SALE_TTL_SECONDS
 
     try:
         qr_string = khqr.create_qr(
@@ -132,6 +136,7 @@ def create_sale(req: SaleCreateReq):
             "md5": md5,
             "status": "PENDING",
             "created_at": created_at,
+            "expired_at": expired_at,
             "paid_at": None,
         }
 
@@ -143,6 +148,7 @@ def create_sale(req: SaleCreateReq):
             qr_png_base64=qr_png_base64(qr_string),
             status="PENDING",
             created_at=created_at,
+            expired_at=expired_at,
         )
 
     except Exception as e:
@@ -155,6 +161,11 @@ def get_sale(sale_id: str):
     if not sale:
         raise HTTPException(status_code=404, detail="Sale not found")
 
+    # Check if the sale is expired
+    current_time = int(time.time())
+    if current_time > sale["expired_at"]:
+        sale["status"] = "EXPIRED"
+
     return {
         "sale_id": sale["sale_id"],
         "amount": sale["amount"],
@@ -166,6 +177,7 @@ def get_sale(sale_id: str):
         "status": sale["status"],
         "created_at": sale["created_at"],
         "paid_at": sale["paid_at"],
+        "expired_at": sale["expired_at"],
     }
 
 
@@ -174,6 +186,10 @@ def check_sale_status(sale_id: str):
     sale = SALES.get(sale_id)
     if not sale:
         raise HTTPException(status_code=404, detail="Sale not found")
+
+    # If the sale expired, don't check payment, just mark it as expired
+    if sale["status"] == "EXPIRED":
+        return SaleStatusRes(sale_id=sale_id, status="EXPIRED", md5=sale["md5"])
 
     # If already done, return quickly
     if sale["status"] in ("PAID", "CANCELLED"):
