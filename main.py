@@ -57,6 +57,15 @@ app.add_middleware(
 SALES: Dict[str, dict] = {}
 
 
+def _refresh_sale_expiry(sale: dict) -> None:
+    """Mark sale EXPIRED if TTL passed and not already finalized."""
+    if sale.get("status") in ("PAID", "CANCELLED"):
+        return
+    now = int(time.time())
+    if now > int(sale.get("expired_at", 0)):
+        sale["status"] = "EXPIRED"
+
+
 def qr_png_base64(payload: str) -> str:
     img = qrcode.make(payload)
     buf = BytesIO()
@@ -161,10 +170,7 @@ def get_sale(sale_id: str):
     if not sale:
         raise HTTPException(status_code=404, detail="Sale not found")
 
-    # Check if the sale is expired
-    current_time = int(time.time())
-    if current_time > sale["expired_at"]:
-        sale["status"] = "EXPIRED"
+    _refresh_sale_expiry(sale)
 
     return {
         "sale_id": sale["sale_id"],
@@ -187,6 +193,9 @@ def check_sale_status(sale_id: str):
     if not sale:
         raise HTTPException(status_code=404, detail="Sale not found")
 
+    # Always refresh expiry here too (important for polling clients)
+    _refresh_sale_expiry(sale)
+
     # If the sale expired, don't check payment, just mark it as expired
     if sale["status"] == "EXPIRED":
         return SaleStatusRes(sale_id=sale_id, status="EXPIRED", md5=sale["md5"])
@@ -201,12 +210,20 @@ def check_sale_status(sale_id: str):
 
     try:
         result = khqr.check_payment(sale["md5"])
-        result_str = str(result).upper()
 
-        # Depending on your library output, you may adjust this mapping
-        if "SUCCESS" in result_str or "PAID" in result_str:
+        # bakong-khqr typically returns strings like "UNPAID" / "PAID" (see PyPI docs).
+        # Make parsing robust in case a future version returns dict/objects.
+        if isinstance(result, str):
+            result_str = result.strip().strip('"').upper()
+        else:
+            result_str = str(result).strip().strip('"').upper()
+
+        # IMPORTANT: do NOT use substring checks like "PAID" in result_str
+        # because "UNPAID" contains "PAID" and would be treated as PAID.
+        if result_str in ("PAID", "SUCCESS", "SUCCESSFUL", "COMPLETED"):
             sale["status"] = "PAID"
             sale["paid_at"] = int(time.time())
+        # else: keep PENDING (covers UNPAID / NOT_FOUND etc.)
 
         return SaleStatusRes(sale_id=sale_id, status=sale["status"], md5=sale["md5"])
 
